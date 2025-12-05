@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from estimate_proto.config import load_app_config, init_env
-from estimate_proto.ui.main_page import render_main_page
+from app.config import load_app_config, init_env
+from app.ui.main_page import render_main_page
 
 
 def main() -> None:

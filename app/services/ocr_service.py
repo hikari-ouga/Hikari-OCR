@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 
-from ..domain.invoice import Invoice  # ★ 相対インポートに統一
+from ..domain.invoice import Invoice
 
 
 class OcrService:
@@ -44,14 +44,18 @@ class OcrService:
         )
         return self._client
 
-    def analyze_invoice(self, pdf_bytes: bytes) -> Invoice:
+    def analyze_invoice(self, pdf_bytes: bytes, mode: str = "single") -> Invoice:
         """
         PDF バイト列を解析し、Invoice オブジェクトを返す。
+
+        mode:
+          - "single": 1PDF = 1ヶ月分
+          - "multi":  1PDF内に複数月が含まれている
         """
         client = self._get_client()
         poller = client.begin_analyze_document("prebuilt-invoice", pdf_bytes)
         result = poller.result()
 
         full_text: str = result.content or ""
-        invoice = Invoice.from_text(full_text, self.cfg)
+        invoice = Invoice.from_text(full_text, self.cfg, mode=mode)
         return invoice
