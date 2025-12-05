@@ -16,6 +16,7 @@ class ExcelService:
 
     - 法人名（UIから入力）を B1 に書き込む
     - 月ごとの kWh（○月値）を B21〜M21 に書き込む
+      ※ 毎回、B1 と B21〜M21 をいったんクリアしてから書き込む
     """
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
@@ -25,6 +26,7 @@ class ExcelService:
     def write_invoices(self, invoices: List[Invoice], corp_name: str = "") -> str:
         """
         template_output.xlsx をベースに:
+          - まず B1 と B21〜M21 を空にする
           - corp_name があれば B1 に書き込む
           - invoices の各 Invoice から 1〜12月の「○月値」を集めて
             B21〜M21 に書き込む。
@@ -39,15 +41,11 @@ class ExcelService:
         sheet_name = self.cfg.get("excel_cell_map", {}).get("sheet", wb.sheetnames[0])
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
 
-        # ★ 法人名が入力されていれば B1 に書き込む
-        corp_name = (corp_name or "").strip()
-        if corp_name:
-            # 必要なら config.json の "法人名" マッピングを使ってもよい
-            # cell = self.cfg.get("excel_cell_map", {}).get("法人名", "B1")
-            # ws[cell] = corp_name
-            ws["B1"] = corp_name
+        # --- 対象セルのクリア ------------------------------------
+        # 法人名セル（B1）を空にする
+        ws["B1"] = ""
 
-        # --- 月ごとの値をB21〜M21に代入 ---
+        # 月ごとのセル位置
         month_cells = {
             1: "B21",
             2: "C21",
@@ -63,6 +61,16 @@ class ExcelService:
             12: "M21",
         }
 
+        # B21〜M21 を一旦すべて空にする
+        for cell in month_cells.values():
+            ws[cell] = ""
+
+        # --- 法人名を書き込む ------------------------------------
+        corp_name = (corp_name or "").strip()
+        if corp_name:
+            ws["B1"] = corp_name
+
+        # --- 月ごとの値を書き込む --------------------------------
         for invoice in invoices:
             fields = invoice.fields
             for m in range(1, 13):
