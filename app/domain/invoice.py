@@ -71,7 +71,7 @@ def extract_kwh_single(text: str) -> str:
 
 def extract_month_segments(text: str) -> List[Tuple[int, int, int]]:
     """
-    【複数月モード】
+    【複数月モード（テキストベース）】
     テキスト中の「○月」の位置を全て探し、
     (month, start_index, end_index_of_segment) のリストを返す。
 
@@ -79,7 +79,6 @@ def extract_month_segments(text: str) -> List[Tuple[int, int, int]]:
       - i番目の「○月」の位置から、(i+1)番目の「○月」の直前まで
       - 最後の月はテキストの末尾まで
     """
-    # すべての「○月」の出現位置を取得
     matches = list(re.finditer(r"(\d{1,2})月", text))
     segments: List[Tuple[int, int, int]] = []
 
@@ -87,12 +86,13 @@ def extract_month_segments(text: str) -> List[Tuple[int, int, int]]:
         month = _safe_int(m.group(1))
         if month is None or not (1 <= month <= 12):
             continue
-        start = m.start()  # この「○月」の位置
+
+        start = m.start()
 
         if idx + 1 < len(matches):
-            end = matches[idx + 1].start()  # 次の「○月」の直前まで
+            end = matches[idx + 1].start()
         else:
-            end = len(text)  # 最後は末尾まで
+            end = len(text)
 
         segments.append((month, start, end))
 
@@ -120,6 +120,9 @@ def extract_kwh_from_segment(segment: str) -> Optional[int]:
     return max(values)
 
 
+# ----------------------
+# Invoice 本体
+# ----------------------
 @dataclass
 class Invoice:
     """
@@ -142,9 +145,8 @@ class Invoice:
         OCR済みテキストをもとに Invoice を生成する。
 
         mode:
-          - "single": 1PDF = 1ヶ月分（これまで通り）
-          - "multi":  1PDF内に複数月が含まれている前提で、
-                      各「○月」ごとに kWh を探して埋める
+          - "single": 1PDF = 1ヶ月分
+          - "multi":  テキスト内に複数月が並んでいるパターン
         """
         if mode == "multi":
             fields = cls._from_text_multi(text)
@@ -172,7 +174,7 @@ class Invoice:
         return fields
 
     # ----------------------
-    # 複数月モード
+    # 複数月モード（テキストベース）
     # ----------------------
     @staticmethod
     def _from_text_multi(text: str) -> Dict[str, str]:
@@ -185,6 +187,9 @@ class Invoice:
 
         のように、
         「○月 〜 次の○月の直前まで」を1セグメントとして、その中の kWh を拾う。
+
+        ※ 今回の「12/24/36ページ＋開始月」は OcrService 側で
+           fields を直接組み立てるので、そっちとは別パターン。
         """
         fields: Dict[str, str] = {}
 
@@ -200,7 +205,6 @@ class Invoice:
 
             mapped_month = 12 if month == 1 else month - 1
             key = f"{mapped_month}月値"
-            # 同じ月が複数回出てきた場合は「後勝ち」とする
             fields[key] = str(v)
 
         return fields
