@@ -10,3 +10,7 @@ paddlepaddle==2.6.2
 numpy==1.26.4
 azure-ai-formrecognizer==3.3.3
 python-dotenv==1.0.1
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+aiofiles==24.1.0

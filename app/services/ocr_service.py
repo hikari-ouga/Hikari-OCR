@@ -150,12 +150,13 @@ class OcrService:
         content: bytes,
         mode: str = "single",
         start_month: Optional[int] = None,
+        month_order: str = "ascending",
     ) -> Invoice:
 
         if mode == "multi":
             if start_month is None:
                 raise ValueError("複数月モードでは start_month が必須です。")
-            return self._analyze_multi(content, start_month)
+            return self._analyze_multi(content, start_month, month_order)
 
         # デフォルトは単月モード
         return self._analyze_single(content)
@@ -310,7 +311,7 @@ class OcrService:
     # --------------------------------------------------------
     # 複数月モード：12 / 24 / 36ページを開始月から割り当てて12ヶ月分生成
     # --------------------------------------------------------
-    def _analyze_multi(self, content: bytes, start_month: int) -> Invoice:
+    def _analyze_multi(self, content: bytes, start_month: int, month_order: str = "ascending") -> Invoice:
         """複数月モードでPDFを解析（複数モデルでフォールバック）"""
         try:
             result, used_model = self._call_azure_ocr_with_fallback(content)
@@ -355,10 +356,14 @@ class OcrService:
                 # kWh 抽出（単月と同じロジック）
                 kwh_value = self._extract_kwh_from_text(month_text)
                 if kwh_value:
-                    mapped_month = 12 if current_month == 1 else current_month - 1
-                    fields[f"{mapped_month}月値"] = kwh_value
+                    # ★ -1 のオフセットを削除: start_month=10なら10月として扱う
+                    fields[f"{current_month}月値"] = kwh_value
 
-                current_month = self._next_month(current_month)
+                # 月の進め方を month_order に応じて切り替え
+                if month_order == "descending":
+                    current_month = self._prev_month(current_month)
+                else:
+                    current_month = self._next_month(current_month)
 
             full_text = "\n".join(page_texts)
             return Invoice(fields=fields, raw_text=full_text)
@@ -479,4 +484,8 @@ class OcrService:
     @staticmethod
     def _next_month(month: int) -> int:
         return 1 if month == 12 else month + 1
+
+    @staticmethod
+    def _prev_month(month: int) -> int:
+        return 12 if month == 1 else month - 1
 

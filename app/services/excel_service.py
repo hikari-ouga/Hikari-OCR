@@ -81,7 +81,17 @@ class ExcelService:
                     print(f"[デバッグ] {key} = {value} をセル {month_cells[m]} に書き込み")
                     ws[month_cells[m]] = value
 
-        # ★ template_output.xlsx をそのまま上書き
-        out_path = self.project_root / "template_output.xlsx"
-        wb.save(out_path)
-        return str(out_path)
+        # ★ 別名で保存してロック回避
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_filename = f"output_{timestamp}.xlsx"
+        out_path = self.project_root / out_filename
+        
+        try:
+            wb.save(out_path)
+            return str(out_path)
+        except PermissionError:
+            # それでも失敗する場合はさらに別の名前で試行
+            out_path = self.project_root / f"output_{timestamp}_v2.xlsx"
+            wb.save(out_path)
+            return str(out_path)

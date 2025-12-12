@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>見積もりアシスト</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>見積もりアシスト</h1>
+            <p class="subtitle">PDF明細を読み取り、Excelへ自動転記します</p>
+        </header>
+
+        <main class="main-content">
+            <!-- 左カラム: 設定 & アップロード -->
+            <section class="panel left-panel">
+                <div class="panel-header">
+                    <span class="step-badge">STEP 1</span>
+                    <h2>設定 & ファイル選択</h2>
+                </div>
+                
+                <div class="panel-body">
+                    <!-- 法人名入力 -->
+                    <div class="form-group">
+                        <label for="corpName">クライアント名</label>
+                        <input 
+                            type="text" 
+                            id="corpName" 
+                            placeholder="例：株式会社サンプル"
+                            class="form-control"
+                        >
+                    </div>
+
+                    <!-- モード選択 -->
+                    <div class="form-group">
+                        <label>読み取りモード</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="mode" value="single" checked>
+                                <span>単月モード</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="mode" value="multi">
+                                <span>一年間モード</span>
+                            </label>
+                        </div>
+                        <p class="help-text mode-desc">1つのPDFに1ヶ月分のデータが含まれている場合は「単月モード」を選択<br>1つのPDFに12ヶ月分のデータが含まれている場合は「一年間モード」を選択</p>
+                    </div>
+
+                    <!-- 複数月モード: 開始月選択 -->
+                    <div class="form-group" id="startMonthGroup" style="display: none;">
+                        <label for="startMonth">開始月</label>
+                        <select id="startMonth" class="form-control">
+                            <option value="1">1月</option>
+                            <option value="2">2月</option>
+                            <option value="3">3月</option>
+                            <option value="4">4月</option>
+                            <option value="5">5月</option>
+                            <option value="6">6月</option>
+                            <option value="7">7月</option>
+                            <option value="8">8月</option>
+                            <option value="9">9月</option>
+                            <option value="10" selected>10月</option>
+                            <option value="11">11月</option>
+                            <option value="12">12月</option>
+                        </select>
+                        <p class="help-text">PDFの1ページ目が何月分か指定してください</p>
+                    </div>
+
+                    <!-- 複数月モード: 月の並び順 -->
+                    <div class="form-group" id="monthOrderGroup" style="display: none;">
+                        <label>月の並び順</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="monthOrder" value="ascending" checked>
+                                <span>昇順（10月→11月→12月...）</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="monthOrder" value="descending">
+                                <span>降順（10月→9月→8月...）</span>
+                            </label>
+                        </div>
+                        <p class="help-text">PDFの月の並び方を選択してください</p>
+                    </div>
+
+                    <!-- PDFアップロード -->
+                    <div class="form-group upload-group">
+                        <label>明細PDFのアップロード</label>
+                        <div class="upload-area" id="uploadArea">
+                            <input 
+                                type="file" 
+                                id="pdfFiles" 
+                                accept=".pdf" 
+                                multiple
+                                style="display: none;"
+                            >
+                            <div class="upload-placeholder">
+                                <div class="icon-circle">
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                        <polyline points="17 8 12 3 7 8"></polyline>
+                                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                                    </svg>
+                                </div>
+                                <p class="upload-title">ファイルをドロップ</p>
+                                <p class="upload-subtitle">またはクリックして選択</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- アップロードされたファイル一覧 -->
+                    <div id="fileList" class="file-list"></div>
+
+                    <!-- 単月モード: 月選択エリア (廃止: ファイルリストに統合) -->
+                    <div id="monthSelectionArea" style="display: none;"></div>
+                </div>
+            </section>
+
+            <!-- 中央カラム: 実行 & ステータス -->
+            <section class="panel center-panel">
+                <div class="panel-header">
+                    <span class="step-badge">STEP 2</span>
+                    <h2>実行 & ステータス</h2>
+                </div>
+                
+                <div class="panel-body center-body">
+                    <div class="action-area">
+                        <button id="executeBtn" class="btn-primary" disabled>
+                            <span class="btn-icon">✨</span>
+                            <span>読み取り開始</span>
+                        </button>
+                        <button id="resetBtn" class="btn-reset" style="display: none;">
+                            <span class="btn-icon">🔄</span>
+                            <span>リセット</span>
+                        </button>
+                        <p class="action-note">設定を確認して開始してください</p>
+                    </div>
+
+                    <div id="progressArea" class="progress-area" style="display: none;">
+                        <div class="spinner-container">
+                            <div class="spinner"></div>
+                        </div>
+                        <p id="progressText" class="status-text">AIが解析中...</p>
+                        <p class="status-subtext">しばらくお待ちください</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 右カラム: 結果 & 保存 -->
+            <section class="panel right-panel">
+                <div class="panel-header">
+                    <span class="step-badge">STEP 3</span>
+                    <h2>完了 & 保存</h2>
+                </div>
+
+                <div class="panel-body">
+                    <div id="resultArea" class="result-area">
+                        <div class="empty-state">
+                            <div class="empty-icon">📊</div>
+                            <p>解析結果がここに表示されます</p>
+                        </div>
+                    </div>
+                    
+                    <div id="downloadArea" style="display: none;">
+                        <button id="downloadBtn" class="btn-download">
+                            <span class="btn-icon">📥</span>
+                            <span>Excelを保存</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/scripts/main.js"></script>
+</body>
+</html>
