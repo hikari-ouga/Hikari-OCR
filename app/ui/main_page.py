@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
@@ -8,6 +9,64 @@ import streamlit as st
 from ..domain.invoice import Invoice
 from ..services.ocr_service import OcrService
 from ..services.excel_service import ExcelService
+
+
+# ------------------------------------------------------------
+# ファイル名から月を自動検出
+# ------------------------------------------------------------
+def _detect_month_from_filename(filename: str) -> Optional[int]:
+    """
+    ファイル名から月を自動検出する。
+    
+    例:
+    - "2025年1月_電気料金.pdf" → 1
+    - "01_請求書.pdf" → 1
+    - "電気_2025_01.pdf" → 1
+    - "invoice_jan.pdf" → 1
+    - "2025-01-15.pdf" → 1
+    
+    Returns:
+        検出された月（1-12）、検出できない場合はNone
+    """
+    # パターン1: "1月" "01月" "１月"などの形式
+    match = re.search(r'([0-9０-９]{1,2})\s*月', filename)
+    if match:
+        month_str = match.group(1)
+        # 全角数字を半角に変換
+        month_str = month_str.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+        month = int(month_str)
+        if 1 <= month <= 12:
+            return month
+    
+    # パターン2: "_01_" "2025-01" "-01." などの形式
+    match = re.search(r'[_\-]([0-9]{2})[_\-\.]', filename)
+    if match:
+        month = int(match.group(1))
+        if 1 <= month <= 12:
+            return month
+    
+    # パターン3: 英語の月名
+    month_names = {
+        'jan': 1, 'january': 1,
+        'feb': 2, 'february': 2,
+        'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4,
+        'may': 5,
+        'jun': 6, 'june': 6,
+        'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8,
+        'sep': 9, 'september': 9,
+        'oct': 10, 'october': 10,
+        'nov': 11, 'november': 11,
+        'dec': 12, 'december': 12,
+    }
+    
+    filename_lower = filename.lower()
+    for name, month in month_names.items():
+        if name in filename_lower:
+            return month
+    
+    return None
 
 
 # ------------------------------------------------------------
@@ -106,6 +165,9 @@ def render_main_page(cfg: Dict[str, Any]) -> None:
             st.session_state.output_file = ""
 
             for f in pdf_files:
+                # ファイル名から月を自動推定
+                detected_month = _detect_month_from_filename(f.name)
+                
                 st.session_state.pdf_files.append(
                     {
                         "name": f.name,
@@ -113,11 +175,37 @@ def render_main_page(cfg: Dict[str, Any]) -> None:
                         "invoice": None,
                         "text": "",
                         "bytes": f.read(),
+                        "detected_month": detected_month,  # 自動検出した月
+                        "selected_month": detected_month,  # ユーザーが選択する月
                     }
                 )
         else:
             st.session_state.pdf_files = []
             st.session_state.output_file = ""
+        
+        # 単月モードの場合、アップロードしたファイルの月を選択
+        if st.session_state.parse_mode == "single" and st.session_state.pdf_files:
+            st.markdown("---")
+            st.markdown("**📅 各PDFの月を指定してください**")
+            
+            for idx, file_info in enumerate(st.session_state.pdf_files):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write(f"**{file_info['name']}**")
+                    if file_info['detected_month']:
+                        st.caption(f"自動検出: {file_info['detected_month']}月")
+                
+                with col2:
+                    default_idx = (file_info['selected_month'] or 1) - 1
+                    selected = st.selectbox(
+                        "月",
+                        options=list(range(1, 13)),
+                        index=default_idx,
+                        format_func=lambda m: f"{m}月",
+                        key=f"month_select_{idx}_{file_info['name']}",
+                    )
+                    st.session_state.pdf_files[idx]['selected_month'] = selected
 
     # ② 真ん中：実行ボタン
     with mid:
@@ -171,11 +259,35 @@ def _run_ocr_and_fill_excel(
         st.session_state.pdf_files[idx]["status"] = "処理中"
         with st.spinner(f"🔄 {file_info['name']} をOCR実行中…"):
             try:
-                invoice = ocr_service.analyze_invoice(
-                    file_info["bytes"],
-                    mode=mode,
-                    start_month=start_month,
-                )
+                # 単月モードの場合、ユーザーが選択した月を使用
+                if mode == "single":
+                    selected_month = file_info.get('selected_month')
+                    # OCRでテキストを取得
+                    invoice = ocr_service.analyze_invoice(
+                        file_info["bytes"],
+                        mode=mode,
+                        start_month=None,
+                    )
+                    
+                    # OCRテキストから直接kWh値を抽出
+                    if selected_month and invoice.raw_text:
+                        from ..services.ocr_service import OcrService
+                        kwh_value = OcrService._extract_kwh_from_text(invoice.raw_text)
+                        
+                        if kwh_value:
+                            # ユーザーが選択した月にkWh値を設定
+                            invoice.fields = {f"{selected_month}月値": kwh_value}
+                        else:
+                            # kWh値が抽出できない
+                            invoice.fields = {}
+                            st.warning(f"⚠️ {file_info['name']} からkWh値を抽出できませんでした")
+                else:
+                    # 複数月モードの場合は従来通り
+                    invoice = ocr_service.analyze_invoice(
+                        file_info["bytes"],
+                        mode=mode,
+                        start_month=start_month,
+                    )
 
                 st.session_state.pdf_files[idx]["status"] = "完了"
                 st.session_state.pdf_files[idx]["invoice"] = invoice
@@ -183,7 +295,10 @@ def _run_ocr_and_fill_excel(
 
                 invoices.append(invoice)
 
-                st.success(f"✅ {file_info['name']} の処理が完了しました")
+                # デバッグ情報：抽出結果を表示
+                month_info = f"（{file_info.get('selected_month')}月分）" if mode == "single" else ""
+                fields_info = f" - フィールド: {invoice.fields}" if invoice.fields else " - フィールド: なし"
+                st.success(f"✅ {file_info['name']} {month_info}の処理が完了しました{fields_info}")
 
             except Exception as e:
                 st.session_state.pdf_files[idx]["status"] = "エラー"

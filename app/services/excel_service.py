@@ -73,10 +73,13 @@ class ExcelService:
         # --- 月ごとの値を書き込む --------------------------------
         for invoice in invoices:
             fields = invoice.fields
+            print(f"[デバッグ] Invoice フィールド: {fields}")  # デバッグ出力
             for m in range(1, 13):
                 key = f"{m}月値"
                 if key in fields and month_cells.get(m):
-                    ws[month_cells[m]] = fields[key]
+                    value = fields[key]
+                    print(f"[デバッグ] {key} = {value} をセル {month_cells[m]} に書き込み")
+                    ws[month_cells[m]] = value
 
         # ★ template_output.xlsx をそのまま上書き
         out_path = self.project_root / "template_output.xlsx"
