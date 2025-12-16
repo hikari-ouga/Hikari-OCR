@@ -437,7 +437,9 @@ class OcrService:
             # この行から "数値 k Wh" のパターンを抽出
             # 例: "207,624kWh" → "207,624"
             # 例: "284,077 k Wh" → "284,077"
-            match = re.search(r'([\d\s,\.]+)\s*k\s*[wW]\s*[hH]', line, flags=re.IGNORECASE)
+            # 例: "2,915 (kWh)" → "2,915"
+            # 例: "2,915（kWh）" → "2,915" (全角括弧)
+            match = re.search(r'([\d\s,\.]+)\s*[\(\[（]?\s*k\s*[wW]\s*[hH]\s*[\)\]）]?', line, flags=re.IGNORECASE)
             
             if not match:
                 logger.warning(f"  [{i}] スキップ（パターンなし）")

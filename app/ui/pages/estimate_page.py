@@ -122,11 +122,18 @@ async def process_pdfs(
                         month_order=month_order
                     )
                     
+                    ocr_confidence = invoice.fields.get("ocr_confidence", 0) if invoice.fields else 0
+                    
+                    # kWh値が1つでも抽出できているか確認
+                    kwh_extracted = any(key.endswith('月値') for key in invoice.fields.keys()) if invoice.fields else False
+                    
                     invoices.append(invoice)
                     results.append({
                         "filename": file.filename,
-                        "status": "完了",
-                        "fields": invoice.fields
+                        "status": "完了" if kwh_extracted else "kWh未検出",
+                        "fields": invoice.fields,
+                        "ocr_text": invoice.raw_text,
+                        "ocr_confidence": ocr_confidence
                     })
                 
             except Exception as e:
