@@ -487,9 +487,18 @@ function displayResults(result) {
 async function handleDownload() {
     try {
         const corpName = elements.corpName.value.trim() || 'output';
+        const address = elements.address.value.trim();
+        const corpNumber = elements.corpNumber.value.trim();
         const filename = `${corpName}.xlsx`;
         
-        const response = await fetch('/api/download');
+        // 最新の住所と法人番号をクエリパラメータで送信
+        const params = new URLSearchParams({
+            corp_name: corpName,
+            address: address,
+            corp_number: corpNumber
+        });
+        
+        const response = await fetch(`/api/download?${params.toString()}`);
         
         if (!response.ok) {
             throw new Error('ダウンロードに失敗しました');

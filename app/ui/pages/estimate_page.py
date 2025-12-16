@@ -163,14 +163,39 @@ async def process_pdfs(
 
 
 @router.get("/download")
-async def download_excel():
+async def download_excel(
+    corp_name: str = "",
+    address: str = "",
+    corp_number: str = ""
+):
     """
     生成されたExcelファイルをダウンロード
+    ダウンロード時に最新の住所・法人番号を更新
     """
     global _last_excel_path
     
     if not _last_excel_path or not Path(_last_excel_path).exists():
         raise HTTPException(status_code=404, detail="Excelファイルが見つかりません")
+    
+    # 住所または法人番号が指定されている場合、Excelファイルを更新
+    if address or corp_number:
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(_last_excel_path)
+            ws = wb.active
+            
+            # 住所をB2に更新
+            if address:
+                ws['B2'] = address
+            
+            # 法人番号をB4に更新
+            if corp_number:
+                ws['B4'] = corp_number
+            
+            wb.save(_last_excel_path)
+            logger.info(f"Excelファイル更新: 住所={address}, 法人番号={corp_number}")
+        except Exception as e:
+            logger.warning(f"Excelファイルの更新に失敗: {e}")
     
     return FileResponse(
         _last_excel_path,
