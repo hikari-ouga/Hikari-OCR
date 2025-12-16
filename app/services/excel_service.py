@@ -23,11 +23,13 @@ class ExcelService:
         self.cfg = cfg
         self.project_root: Path = get_project_root()
 
-    def write_invoices(self, invoices: List[Invoice], corp_name: str = "") -> str:
+    def write_invoices(self, invoices: List[Invoice], corp_name: str = "", address: str = "", corp_number: str = "") -> str:
         """
         template_output.xlsx をベースに:
-          - まず B1 と B21〜M21 を空にする
+          - まず B1, B2, B4, B21〜M21 を空にする
           - corp_name があれば B1 に書き込む
+          - address があれば B2 に書き込む
+          - corp_number があれば B4 に書き込む
           - invoices の各 Invoice から 1〜12月の「○月値」を集めて
             B21〜M21 に書き込む。
 
@@ -42,8 +44,10 @@ class ExcelService:
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
 
         # --- 対象セルのクリア ------------------------------------
-        # 法人名セル（B1）を空にする
+        # 法人名セル（B1）、住所（B2）、法人番号（B4）を空にする
         ws["B1"] = ""
+        ws["B2"] = ""
+        ws["B4"] = ""
 
         # 月ごとのセル位置
         month_cells = {
@@ -65,10 +69,18 @@ class ExcelService:
         for cell in month_cells.values():
             ws[cell] = ""
 
-        # --- 法人名を書き込む ------------------------------------
+        # --- 法人情報を書き込む ------------------------------------
         corp_name = (corp_name or "").strip()
         if corp_name:
             ws["B1"] = corp_name
+        
+        address = (address or "").strip()
+        if address:
+            ws["B2"] = address
+        
+        corp_number = (corp_number or "").strip()
+        if corp_number:
+            ws["B4"] = corp_number
 
         # --- 月ごとの値を書き込む --------------------------------
         for invoice in invoices:
@@ -78,8 +90,15 @@ class ExcelService:
                 key = f"{m}月値"
                 if key in fields and month_cells.get(m):
                     value = fields[key]
-                    print(f"[デバッグ] {key} = {value} をセル {month_cells[m]} に書き込み")
-                    ws[month_cells[m]] = value
+                    # カンマを削除して数値に変換
+                    try:
+                        numeric_value = int(value.replace(",", ""))
+                        print(f"[デバッグ] {key} = {numeric_value} (数値) をセル {month_cells[m]} に書き込み")
+                        ws[month_cells[m]] = numeric_value
+                    except (ValueError, AttributeError):
+                        # 変換失敗時は文字列のまま
+                        print(f"[デバッグ] {key} = {value} (文字列) をセル {month_cells[m]} に書き込み")
+                        ws[month_cells[m]] = value
 
         # ★ 別名で保存してロック回避
         import datetime

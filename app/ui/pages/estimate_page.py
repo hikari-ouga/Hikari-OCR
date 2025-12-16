@@ -30,6 +30,8 @@ class ExcelGenerationRequest(BaseModel):
 @router.post("/process")
 async def process_pdfs(
     corp_name: str = Form(...),
+    address: str = Form(""),
+    corp_number: str = Form(""),
     mode: str = Form(...),
     start_month: Optional[int] = Form(None),
     month_order: Optional[str] = Form("ascending"),
@@ -88,21 +90,27 @@ async def process_pdfs(
                     )
                     
                     # OCRテキストから直接kWh値を抽出
+                    kwh_value = ""
+                    ocr_confidence = invoice.fields.get("ocr_confidence", 0) if invoice.fields else 0
+                    
                     if selected_month and invoice.raw_text:
                         kwh_value = OcrService._extract_kwh_from_text(invoice.raw_text)
                         
                         if kwh_value:
-                            invoice.fields = {f"{selected_month}月値": kwh_value}
-                            logger.info(f"{file.filename}: {selected_month}月値={kwh_value}")
+                            invoice.fields = {f"{selected_month}月値": kwh_value, "ocr_confidence": ocr_confidence}
+                            logger.info(f"{file.filename}: {selected_month}月値={kwh_value}, 信頼度={ocr_confidence:.2f}")
                         else:
-                            invoice.fields = {}
+                            invoice.fields = {"ocr_confidence": ocr_confidence}
                             logger.warning(f"{file.filename}: kWh値を抽出できませんでした")
                     
                     invoices.append(invoice)
                     results.append({
                         "filename": file.filename,
-                        "status": "完了",
-                        "fields": invoice.fields
+                        "status": "完了" if kwh_value else "kWh未検出",
+                        "fields": invoice.fields,
+                        "kwh": kwh_value,
+                        "ocr_text": invoice.raw_text,
+                        "ocr_confidence": ocr_confidence
                     })
                     
                 else:
@@ -131,7 +139,12 @@ async def process_pdfs(
         
         # Excelに書き込み
         try:
-            excel_path = excel_service.write_invoices(invoices, corp_name=corp_name)
+            excel_path = excel_service.write_invoices(
+                invoices, 
+                corp_name=corp_name,
+                address=address,
+                corp_number=corp_number
+            )
             _last_excel_path = excel_path
             logger.info(f"Excel書き込み完了: {excel_path}")
         except Exception as e:

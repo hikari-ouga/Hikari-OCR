@@ -9,6 +9,8 @@ let currentMode = 'single';
 // ========================================
 const elements = {
     corpName: document.getElementById('corpName'),
+    address: document.getElementById('address'),
+    corpNumber: document.getElementById('corpNumber'),
     modeRadios: document.querySelectorAll('input[name="mode"]'),
     startMonthGroup: document.getElementById('startMonthGroup'),
     startMonth: document.getElementById('startMonth'),
@@ -58,6 +60,14 @@ function initializeEventListeners() {
 
     // ダウンロードボタン
     elements.downloadBtn.addEventListener('click', handleDownload);
+    
+    // ファイル名クリックイベント（イベント委譲）
+    elements.fileList.addEventListener('click', function(e) {
+        if (e.target.classList.contains('file-name-clickable')) {
+            const index = parseInt(e.target.getAttribute('data-index'));
+            previewPdf(index);
+        }
+    });
 }
 
 // ========================================
@@ -127,14 +137,20 @@ function detectMonthFromFilename(filename) {
         let monthStr = match[1];
         // 全角数字を半角に変換
         monthStr = monthStr.replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
-        const month = parseInt(monthStr);
+        let month = parseInt(monthStr);
+        // 明細は翌月に来るので-1する（12月→11月、1月→12月）
+        month = month - 1;
+        if (month === 0) month = 12;
         if (month >= 1 && month <= 12) return month;
     }
     
     // パターン2: "_01_" "2025-01" "-01." などの形式
     match = filename.match(/[_\-]([0-9]{2})[_\-\.]/);
     if (match) {
-        const month = parseInt(match[1]);
+        let month = parseInt(match[1]);
+        // 明細は翌月に来るので-1する
+        month = month - 1;
+        if (month === 0) month = 12;
         if (month >= 1 && month <= 12) return month;
     }
     
@@ -186,7 +202,6 @@ function renderFileList() {
                     <select onchange="updateFileMonth(${index}, this.value)" class="compact-select">
                         ${options}
                     </select>
-                    ${item.detectedMonth ? `<span class="auto-detect-badge">自動: ${item.detectedMonth}月</span>` : ''}
                 </div>
             `;
         }
@@ -196,7 +211,7 @@ function renderFileList() {
             <div class="file-info-group">
                 <div class="file-main-info">
                     <div class="file-icon">PDF</div>
-                    <div class="file-name" title="${item.file.name}">${item.file.name}</div>
+                    <div class="file-name file-name-clickable" title="${item.file.name}" data-index="${index}">${item.file.name}</div>
                 </div>
                 ${monthSelector}
             </div>
@@ -242,9 +257,11 @@ function updateExecuteButton() {
 // ========================================
 async function handleExecute() {
     const corpName = elements.corpName.value.trim();
+    const address = elements.address.value.trim();
+    const corpNumber = elements.corpNumber.value.trim();
     
     if (!corpName) {
-        alert('法人名を入力してください。');
+        alert('クライアント名を入力してください。');
         return;
     }
     
@@ -280,6 +297,8 @@ async function handleExecute() {
         // FormDataの準備
         const formData = new FormData();
         formData.append('corp_name', corpName);
+        formData.append('address', address);
+        formData.append('corp_number', corpNumber);
         formData.append('mode', currentMode);
         
         if (currentMode === 'multi') {
@@ -322,7 +341,8 @@ async function handleExecute() {
                 const uploadedFile = uploadedFiles.find(f => f.file.name === item.filename);
                 const selectedMonth = uploadedFile ? uploadedFile.selectedMonth : null;
                 
-                if (item.status === '完了') {
+                // kWh未検出でもエラー扱いしない（OCRは実行されている）
+                if (item.status === '完了' || item.status === 'kWh未検出') {
                     addResultRow(resultTableBody, item, selectedMonth);
                 } else {
                     addErrorRow(resultTableBody, item.filename);
@@ -346,34 +366,99 @@ async function handleExecute() {
 }
 
 function addResultRow(tbody, result, selectedMonth) {
+    // OCR結果の折りたたみHTML
+    let ocrDetailsHtml = '';
+    const confidence = result.ocr_confidence || 0;
+    
+    // OCR全文の品質チェック: 日本語文字（ひらがな・カタカナ・漢字）の割合を確認
+    let shouldShowOcr = false;
+    if (confidence >= 0.8 && result.ocr_text && result.ocr_text.length > 0) {
+        const text = result.ocr_text;
+        // 日本語文字をカウント
+        const japaneseChars = text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g) || [];
+        const totalChars = text.replace(/\s/g, '').length; // 空白を除く全文字数
+        const japaneseRatio = totalChars > 0 ? japaneseChars.length / totalChars : 0;
+        
+        // 日本語文字が20%以上含まれている場合のみ表示
+        shouldShowOcr = japaneseRatio >= 0.2;
+    }
+    
+    if (shouldShowOcr) {
+        const escapedText = result.ocr_text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        ocrDetailsHtml = `
+            <tr class="ocr-details-row">
+                <td colspan="3">
+                    <details class="ocr-details">
+                        <summary>📄 OCR結果全文を表示（信頼度: ${(confidence * 100).toFixed(0)}%）</summary>
+                        <pre class="ocr-text">${escapedText}</pre>
+                    </details>
+                </td>
+            </tr>
+        `;
+    } else if (result.ocr_text && result.ocr_text.length > 0) {
+        // OCRは実行されたが品質が低い場合
+        ocrDetailsHtml = `
+            <tr class="ocr-details-row">
+                <td colspan="3">
+                    <div class="ocr-unavailable">
+                        ⚠️ 文字起こし不可（信頼度が低いか、判読できない文字が多く含まれています）
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+    
     // fields: {"1月値": 12345, "2月値": 23456, ...} のような形式
     if (result.fields && Object.keys(result.fields).length > 0) {
-        // 複数月モードの場合、全ての月を表示
-        const monthKeys = Object.keys(result.fields).sort((a, b) => {
-            const monthA = parseInt(a.replace('月値', ''));
-            const monthB = parseInt(b.replace('月値', ''));
-            return monthA - monthB;
-        });
+        // ocr_confidence を除外
+        const monthKeys = Object.keys(result.fields)
+            .filter(key => key !== 'ocr_confidence')
+            .sort((a, b) => {
+                const monthA = parseInt(a.replace('月値', ''));
+                const monthB = parseInt(b.replace('月値', ''));
+                return monthA - monthB;
+            });
         
-        monthKeys.forEach(key => {
+        if (monthKeys.length > 0) {
+            monthKeys.forEach((key, index) => {
+                const row = document.createElement('tr');
+                const monthDisplay = key.replace('値', ''); // "1月"
+                const kwhDisplay = result.fields[key] + ' kWh';
+                
+                row.innerHTML = `
+                    <td class="col-month">${monthDisplay}</td>
+                    <td class="col-kwh">${kwhDisplay}</td>
+                    <td class="col-status"><span class="status-badge success">完了</span></td>
+                `;
+                tbody.appendChild(row);
+                
+                // 最後の行の後にOCR詳細を追加
+                if (index === monthKeys.length - 1 && ocrDetailsHtml) {
+                    tbody.insertAdjacentHTML('beforeend', ocrDetailsHtml);
+                }
+            });
+        } else if (selectedMonth) {
+            // kWh未抽出でもOCRは実行されているので「完了」扱い
             const row = document.createElement('tr');
-            const monthDisplay = key.replace('値', ''); // "1月"
-            const kwhDisplay = result.fields[key] + ' kWh';
-            
             row.innerHTML = `
-                <td class="col-month">${monthDisplay}</td>
-                <td class="col-kwh">${kwhDisplay}</td>
+                <td class="col-month">${selectedMonth}月</td>
+                <td class="col-kwh">未検出</td>
                 <td class="col-status"><span class="status-badge success">完了</span></td>
             `;
             tbody.appendChild(row);
-        });
+            
+            // OCR詳細があれば追加
+            if (ocrDetailsHtml) {
+                tbody.insertAdjacentHTML('beforeend', ocrDetailsHtml);
+            }
+        }
     } else if (selectedMonth) {
-        // データがない場合
+        // fieldsが存在しない場合（完全なエラー）
         const row = document.createElement('tr');
         row.innerHTML = `
             <td class="col-month">${selectedMonth}月</td>
-            <td class="col-kwh">抽出失敗</td>
-            <td class="col-status"><span class="status-badge success">完了</span></td>
+            <td class="col-kwh">エラー</td>
+            <td class="col-status"><span class="status-badge error">失敗</span></td>
         `;
         tbody.appendChild(row);
     }
@@ -430,6 +515,11 @@ async function handleDownload() {
 // リセット処理
 // ========================================
 function handleReset() {
+    // 入力欄をクリア
+    elements.corpName.value = '';
+    elements.address.value = '';
+    elements.corpNumber.value = '';
+    
     // ファイルリストをクリア
     uploadedFiles = [];
     renderFileList();
@@ -451,4 +541,18 @@ function handleReset() {
     
     // ファイル入力をリセット
     elements.pdfFiles.value = '';
+}
+
+// ========================================
+// PDF プレビュー
+// ========================================
+function previewPdf(index) {
+    const file = uploadedFiles[index].file;
+    const url = URL.createObjectURL(file);
+    window.open(url, '_blank');
+    
+    // URLは新しいタブで開かれた後、少し時間をおいて解放
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+    }, 1000);
 }

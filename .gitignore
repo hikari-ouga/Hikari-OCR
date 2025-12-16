@@ -7,3 +7,16 @@ instance
 .DS_Store
 .vscode/
 .idea/
+
+# 出力ファイル
+output_*.xlsx
+
+# Python仮想環境
+venv/
+env/
+
+# ログファイル
+*.log
+
+# OS固有
+Thumbs.db

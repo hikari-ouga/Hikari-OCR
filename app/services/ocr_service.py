@@ -300,8 +300,24 @@ class OcrService:
             
             logger.info(f"単月モード解析完了: モデル={used_model}, 文字数={len(full_text)}")
             
-            # 月の割り当てはUI側で行うため、ここではraw_textのみを返す
-            invoice = Invoice(fields={}, raw_text=full_text)
+            # 信頼度を計算（全単語の平均confidence）
+            total_confidence = 0
+            word_count = 0
+            for page in result.pages:
+                if hasattr(page, 'words') and page.words:
+                    for word in page.words:
+                        if hasattr(word, 'confidence') and word.confidence is not None:
+                            total_confidence += word.confidence
+                            word_count += 1
+            
+            average_confidence = total_confidence / word_count if word_count > 0 else 0
+            logger.info(f"OCR平均信頼度: {average_confidence:.2f}")
+            
+            # 月の割り当てはUI側で行うため、ここではraw_textと信頼度を返す
+            invoice = Invoice(
+                fields={"ocr_confidence": average_confidence},
+                raw_text=full_text
+            )
             return invoice
             
         except Exception as e:
