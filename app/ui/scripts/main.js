@@ -3,6 +3,24 @@
 // ========================================
 let uploadedFiles = [];
 let currentMode = 'single';
+let currentJobId = null;
+let uploadCounter = 0;
+// 単月モードの月選択を「全ファイル連動」させるための差分（0..11）
+// detectedMonth（ファイル名から自動判定した月）にこの差分を足して selectedMonth を決める
+let globalMonthDelta = 0;
+
+function wrapMonth(month) {
+    const m = Number(month);
+    if (!Number.isFinite(m)) return 1;
+    return ((m - 1) % 12 + 12) % 12 + 1;
+}
+
+function calcDelta(baseMonth, selectedMonth) {
+    // 0..11 の差分（循環）を返す
+    const b = wrapMonth(baseMonth);
+    const s = wrapMonth(selectedMonth);
+    return (s - b + 12) % 12;
+}
 
 // ========================================
 // DOM要素取得
@@ -116,15 +134,29 @@ function handleDrop(e) {
 function addFiles(files) {
     files.forEach(file => {
         const detectedMonth = detectMonthFromFilename(file.name);
+        const initialSelected = detectedMonth ? wrapMonth(detectedMonth + globalMonthDelta) : 1;
         uploadedFiles.push({
             file: file,
             detectedMonth: detectedMonth,
-            selectedMonth: detectedMonth || 1
+            selectedMonth: initialSelected,
+            uploadOrder: uploadCounter++
         });
     });
     
     renderFileList();
     updateExecuteButton();
+}
+
+function sortUploadedFilesForDisplay() {
+    // 単月モードのみ、ユーザーが選択した月を基準に並べ替える
+    if (currentMode !== 'single') return;
+
+    uploadedFiles.sort((a, b) => {
+        const ma = Number(a.selectedMonth) || 0;
+        const mb = Number(b.selectedMonth) || 0;
+        if (ma !== mb) return ma - mb;
+        return (a.uploadOrder ?? 0) - (b.uploadOrder ?? 0);
+    });
 }
 
 // ========================================
@@ -188,6 +220,8 @@ function renderFileList() {
         elements.fileList.innerHTML = '';
         return;
     }
+
+    sortUploadedFilesForDisplay();
     
     elements.fileList.innerHTML = uploadedFiles.map((item, index) => {
         // 単月モードの場合、月選択プルダウンを表示
@@ -242,7 +276,25 @@ function renderMonthSelections() {
 }
 
 function updateFileMonth(index, month) {
-    uploadedFiles[index].selectedMonth = parseInt(month);
+    const newMonth = parseInt(month);
+    const changed = uploadedFiles[index];
+    if (!changed) return;
+
+    changed.selectedMonth = newMonth;
+
+    // ファイル名から月が取れている場合は、その差分を「全体の差分」として採用し全ファイルへ反映
+    // 例: detectedMonth=2（-1補正済）を 3 に変えた => delta=+1 を他のファイルにも適用
+    if (changed.detectedMonth) {
+        globalMonthDelta = calcDelta(changed.detectedMonth, newMonth);
+        uploadedFiles.forEach(item => {
+            if (item.detectedMonth) {
+                item.selectedMonth = wrapMonth(item.detectedMonth + globalMonthDelta);
+            }
+        });
+    }
+
+    // 選択月を基準に並べ替えて表示を更新
+    renderFileList();
 }
 
 // ========================================
@@ -259,11 +311,6 @@ async function handleExecute() {
     const corpName = elements.corpName.value.trim();
     const address = elements.address.value.trim();
     const corpNumber = elements.corpNumber.value.trim();
-    
-    if (!corpName) {
-        alert('クライアント名を入力してください。');
-        return;
-    }
     
     if (uploadedFiles.length === 0) {
         alert('PDFファイルをアップロードしてください。');
@@ -290,6 +337,7 @@ async function handleExecute() {
         </table>
     `;
     elements.downloadArea.style.display = 'none';
+    currentJobId = null;
     
     const resultTableBody = document.getElementById('resultTableBody');
 
@@ -333,6 +381,7 @@ async function handleExecute() {
         }
         
         const result = await response.json();
+        currentJobId = result.job_id || null;
         
         // 結果をテーブルに表示
         if (result.results) {
@@ -369,27 +418,36 @@ function addResultRow(tbody, result, selectedMonth) {
     // OCR結果の折りたたみHTML
     let ocrDetailsHtml = '';
     const confidence = result.ocr_confidence || 0;
+    const textSource = result.text_source || 'ocr';
     
     // OCR全文の品質チェック: 日本語文字（ひらがな・カタカナ・漢字）の割合を確認
     let shouldShowOcr = false;
-    if (confidence >= 0.8 && result.ocr_text && result.ocr_text.length > 0) {
+    if (result.ocr_text && result.ocr_text.length > 0) {
         const text = result.ocr_text;
         // 日本語文字をカウント
         const japaneseChars = text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g) || [];
         const totalChars = text.replace(/\s/g, '').length; // 空白を除く全文字数
         const japaneseRatio = totalChars > 0 ? japaneseChars.length / totalChars : 0;
-        
-        // 日本語文字が20%以上含まれている場合のみ表示
-        shouldShowOcr = japaneseRatio >= 0.2;
+
+        if (textSource === 'pdf_text') {
+            // PDFのテキスト層抽出はOCR信頼度に依存せず表示
+            shouldShowOcr = japaneseRatio >= 0.05;
+        } else {
+            // OCR結果は信頼度が高く、日本語が一定以上含まれている場合のみ表示
+            shouldShowOcr = (confidence >= 0.8) && (japaneseRatio >= 0.2);
+        }
     }
     
     if (shouldShowOcr) {
         const escapedText = result.ocr_text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const label = textSource === 'pdf_text'
+            ? '📄 PDFテキスト（コピー可能）を表示'
+            : '📄 OCR結果全文を表示';
         ocrDetailsHtml = `
             <tr class="ocr-details-row">
                 <td colspan="3">
                     <details class="ocr-details">
-                        <summary>📄 OCR結果全文を表示（信頼度: ${(confidence * 100).toFixed(0)}%）</summary>
+                        <summary>${label}</summary>
                         <pre class="ocr-text">${escapedText}</pre>
                     </details>
                 </td>
@@ -397,11 +455,14 @@ function addResultRow(tbody, result, selectedMonth) {
         `;
     } else if (result.ocr_text && result.ocr_text.length > 0) {
         // OCRは実行されたが品質が低い場合
+        const msg = textSource === 'pdf_text'
+            ? '⚠️ テキスト層から抽出しましたが、判読できない文字が多く含まれています'
+            : '⚠️ 文字起こし不可（判読できない文字が多く含まれています）';
         ocrDetailsHtml = `
             <tr class="ocr-details-row">
                 <td colspan="3">
                     <div class="ocr-unavailable">
-                        ⚠️ 文字起こし不可（信頼度が低いか、判読できない文字が多く含まれています）
+                        ${msg}
                     </div>
                 </td>
             </tr>
@@ -414,20 +475,28 @@ function addResultRow(tbody, result, selectedMonth) {
         const monthKeys = Object.keys(result.fields)
             .filter(key => key !== 'ocr_confidence')
             .sort((a, b) => {
-                const monthA = parseInt(a.replace('月値', ''));
-                const monthB = parseInt(b.replace('月値', ''));
+                const monthA = parseInt(String(a).trim().replace('月値', ''));
+                const monthB = parseInt(String(b).trim().replace('月値', ''));
                 return monthA - monthB;
             });
         
         if (monthKeys.length > 0) {
             monthKeys.forEach((key, index) => {
+                const cleanedKey = String(key).trim();
+                const monthNum = parseInt(cleanedKey.replace('月値', ''));
                 const row = document.createElement('tr');
-                const monthDisplay = key.replace('値', ''); // "1月"
-                const kwhDisplay = result.fields[key] + ' kWh';
+                const monthDisplay = cleanedKey.replace('値', ''); // "1月"
+                const rawValue = result.fields[key];
+                const displayValue = (rawValue === null || rawValue === undefined) ? '' : String(rawValue);
                 
                 row.innerHTML = `
                     <td class="col-month">${monthDisplay}</td>
-                    <td class="col-kwh">${kwhDisplay}</td>
+                    <td class="col-kwh">
+                        <div class="kwh-edit">
+                            <span class="kwh-editable" contenteditable="true" role="textbox" aria-label="${monthNum}月の使用電力量" data-month="${monthNum}">${displayValue}</span>
+                            <span class="kwh-unit">kWh</span>
+                        </div>
+                    </td>
                     <td class="col-status"><span class="status-badge success">完了</span></td>
                 `;
                 tbody.appendChild(row);
@@ -442,7 +511,12 @@ function addResultRow(tbody, result, selectedMonth) {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td class="col-month">${selectedMonth}月</td>
-                <td class="col-kwh">未検出</td>
+                <td class="col-kwh">
+                    <div class="kwh-edit">
+                        <span class="kwh-editable" contenteditable="true" role="textbox" aria-label="${selectedMonth}月の使用電力量" data-month="${selectedMonth}">未検出</span>
+                        <span class="kwh-unit">kWh</span>
+                    </div>
+                </td>
                 <td class="col-status"><span class="status-badge success">完了</span></td>
             `;
             tbody.appendChild(row);
@@ -462,6 +536,23 @@ function addResultRow(tbody, result, selectedMonth) {
         `;
         tbody.appendChild(row);
     }
+}
+
+function collectKwhOverrides() {
+    const inputs = document.querySelectorAll('.kwh-editable');
+    const overrides = {};
+    inputs.forEach(input => {
+        const month = parseInt(input.getAttribute('data-month'));
+        const valueRaw = (input.textContent || '').trim();
+        if (!month || month < 1 || month > 12) return;
+        if (valueRaw === '' || valueRaw === '未検出') return;
+
+        // 数字以外を除去（例: "12,345" や "12345kWh" も許容）
+        const cleaned = valueRaw.replace(/[^0-9,]/g, '').replace(/,/g, '');
+        if (cleaned === '') return;
+        overrides[String(month)] = cleaned;
+    });
+    return overrides;
 }
 
 function addErrorRow(tbody, filename) {
@@ -490,13 +581,23 @@ async function handleDownload() {
         const address = elements.address.value.trim();
         const corpNumber = elements.corpNumber.value.trim();
         const filename = `${corpName}.xlsx`;
+
+        if (!currentJobId) {
+            throw new Error('ダウンロード用の処理IDが見つかりません。もう一度「読み取り開始」を実行してください。');
+        }
         
         // 最新の住所と法人番号をクエリパラメータで送信
+        const kwhOverrides = collectKwhOverrides();
         const params = new URLSearchParams({
+            job_id: currentJobId,
             corp_name: corpName,
             address: address,
             corp_number: corpNumber
         });
+
+        if (Object.keys(kwhOverrides).length > 0) {
+            params.set('kwh_overrides', JSON.stringify(kwhOverrides));
+        }
         
         const response = await fetch(`/api/download?${params.toString()}`);
         
@@ -528,9 +629,12 @@ function handleReset() {
     elements.corpName.value = '';
     elements.address.value = '';
     elements.corpNumber.value = '';
+    currentJobId = null;
     
     // ファイルリストをクリア
     uploadedFiles = [];
+    uploadCounter = 0;
+    globalMonthDelta = 0;
     renderFileList();
     
     // 結果エリアを初期状態に戻す

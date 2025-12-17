@@ -27,14 +27,13 @@ class OcrService:
 
     の Invoice を生成するサービス。
     
-    複数のモデルをフォールバックで試行し、OCR精度を向上。
+    1つのモデル（prebuilt-invoice）のみを使用し、
+    元PDFで失敗した場合は前処理PDFで再試行する。
     """
 
     # 試行するモデルの優先順位
     MODELS_TO_TRY = [
-        "prebuilt-invoice",      # 請求書特化 - 最も構造化された情報
-        "prebuilt-read",         # 汎用テキスト読み取り - 高精度
-        "prebuilt-document",     # 汎用ドキュメント - 最も柔軟
+        "prebuilt-invoice",      # 請求書特化
     ]
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
@@ -340,6 +339,19 @@ class OcrService:
                 logger.error("OCRでテキストを抽出できませんでした")
                 raise ValueError("PDFからテキストを抽出できませんでした。画像のみのPDFの可能性があります。")
 
+            # 信頼度を計算（全単語の平均confidence）
+            total_confidence = 0
+            word_count = 0
+            for page in result.pages:
+                if hasattr(page, 'words') and page.words:
+                    for word in page.words:
+                        if hasattr(word, 'confidence') and word.confidence is not None:
+                            total_confidence += word.confidence
+                            word_count += 1
+
+            average_confidence = total_confidence / word_count if word_count > 0 else 0
+            logger.info(f"OCR平均信頼度: {average_confidence:.2f}")
+
             for page in result.pages:
                 if page.spans:
                     # 通常1ページ1spanなので先頭だけ取ればOK
@@ -361,6 +373,8 @@ class OcrService:
 
             pages_per_month = num_pages // 12  # 12→1、24→2、36→3
             fields: Dict[str, str] = {}
+
+            fields["ocr_confidence"] = average_confidence
 
             current_month = start_month
 

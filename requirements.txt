@@ -8,3 +8,4 @@ uvicorn[standard]==0.32.0
 python-multipart==0.0.12
 aiofiles==24.1.0
 numpy==1.26.4
+pdfminer.six==20231228

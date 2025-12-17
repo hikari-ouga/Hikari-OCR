@@ -4,6 +4,9 @@ import json
 import logging
 from typing import List, Optional
 from pathlib import Path
+import uuid
+
+import re
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -12,6 +15,7 @@ from pydantic import BaseModel
 from ...domain.invoice import Invoice
 from ...services.ocr_service import OcrService
 from ...services.excel_service import ExcelService
+from ...services.pdf_text_service import extract_text_from_pdf_bytes
 from ...config import load_app_config
 
 # ロガー設定
@@ -19,8 +23,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# グローバル変数でExcelファイルパスを保持
-_last_excel_path: Optional[str] = None
+# job_id -> Excel file path
+_excel_jobs: dict[str, str] = {}
+
+
+def _japanese_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    japanese_chars = re.findall(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]", text)
+    total_chars = len(re.sub(r"\s+", "", text))
+    return (len(japanese_chars) / total_chars) if total_chars else 0.0
 
 # リクエストボディのモデル定義
 class ExcelGenerationRequest(BaseModel):
@@ -29,7 +41,7 @@ class ExcelGenerationRequest(BaseModel):
 
 @router.post("/process")
 async def process_pdfs(
-    corp_name: str = Form(...),
+    corp_name: str = Form(""),
     address: str = Form(""),
     corp_number: str = Form(""),
     mode: str = Form(...),
@@ -52,8 +64,6 @@ async def process_pdfs(
     Returns:
         処理結果のJSON
     """
-    global _last_excel_path
-    
     try:
         # 設定読み込み
         cfg = load_app_config()
@@ -81,27 +91,53 @@ async def process_pdfs(
                 if mode == "single":
                     # 単月モード
                     selected_month = month_map.get(file.filename, 1)
-                    
-                    # OCRでテキスト取得
+
+                    # 1) まずOCR
                     invoice = ocr_service.analyze_invoice(
                         content,
                         mode="single",
                         start_month=None
                     )
-                    
-                    # OCRテキストから直接kWh値を抽出
-                    kwh_value = ""
+
                     ocr_confidence = invoice.fields.get("ocr_confidence", 0) if invoice.fields else 0
-                    
-                    if selected_month and invoice.raw_text:
-                        kwh_value = OcrService._extract_kwh_from_text(invoice.raw_text)
-                        
-                        if kwh_value:
-                            invoice.fields = {f"{selected_month}月値": kwh_value, "ocr_confidence": ocr_confidence}
-                            logger.info(f"{file.filename}: {selected_month}月値={kwh_value}, 信頼度={ocr_confidence:.2f}")
-                        else:
-                            invoice.fields = {"ocr_confidence": ocr_confidence}
-                            logger.warning(f"{file.filename}: kWh値を抽出できませんでした")
+                    text_source = "ocr"
+                    ocr_text = invoice.raw_text or ""
+                    best_text = ocr_text
+
+                    # OCRで既にkWhが取れているなら保持する（本文だけ差し替えるケースのため）
+                    kwh_from_ocr = ""
+                    if invoice.fields and selected_month:
+                        kwh_from_ocr = invoice.fields.get(f"{selected_month}月値", "") or ""
+                    if not kwh_from_ocr and selected_month and ocr_text:
+                        kwh_from_ocr = OcrService._extract_kwh_from_text(ocr_text)
+
+                    # 2) OCR品質が低い場合のみテキスト層へフォールバック
+                    if best_text:
+                        jr = _japanese_ratio(best_text)
+                        should_fallback = (ocr_confidence < 0.8) or (jr < 0.2)
+                    else:
+                        should_fallback = True
+
+                    if should_fallback:
+                        extracted = extract_text_from_pdf_bytes(content)
+                        if extracted:
+                            best_text = extracted
+                            text_source = "pdf_text"
+
+                    # kWhは「OCRで取れていればそれを優先」。無い場合のみ、表示テキスト(best_text)から再抽出。
+                    kwh_value = kwh_from_ocr
+                    if not kwh_value and selected_month and best_text:
+                        kwh_value = OcrService._extract_kwh_from_text(best_text)
+
+                    if selected_month and kwh_value:
+                        invoice.fields = {f"{selected_month}月値": kwh_value, "ocr_confidence": ocr_confidence}
+                        logger.info(f"{file.filename}: {selected_month}月値={kwh_value}, 信頼度={ocr_confidence:.2f}")
+                    else:
+                        invoice.fields = {"ocr_confidence": ocr_confidence}
+                        logger.warning(f"{file.filename}: kWh値を抽出できませんでした")
+
+                    # 返却用テキストに合わせて raw_text も更新しておく（表示用途）
+                    invoice.raw_text = best_text
                     
                     invoices.append(invoice)
                     results.append({
@@ -109,20 +145,38 @@ async def process_pdfs(
                         "status": "完了" if kwh_value else "kWh未検出",
                         "fields": invoice.fields,
                         "kwh": kwh_value,
-                        "ocr_text": invoice.raw_text,
+                        "ocr_text": best_text,
                         "ocr_confidence": ocr_confidence
+                        ,"text_source": text_source
                     })
                     
                 else:
                     # 複数月モード
+
+                    # 1) まずOCR
                     invoice = ocr_service.analyze_invoice(
                         content,
                         mode="multi",
                         start_month=start_month,
                         month_order=month_order
                     )
-                    
+
                     ocr_confidence = invoice.fields.get("ocr_confidence", 0) if invoice.fields else 0
+                    text_source = "ocr"
+                    best_text = invoice.raw_text or ""
+
+                    # 2) OCR品質が低い場合のみテキスト層へフォールバック（表示用テキストの置き換え）
+                    if best_text:
+                        jr = _japanese_ratio(best_text)
+                        should_fallback = (ocr_confidence < 0.8) or (jr < 0.2)
+                    else:
+                        should_fallback = True
+
+                    if should_fallback:
+                        extracted = extract_text_from_pdf_bytes(content)
+                        if extracted:
+                            best_text = extracted
+                            text_source = "pdf_text"
                     
                     # kWh値が1つでも抽出できているか確認
                     kwh_extracted = any(key.endswith('月値') for key in invoice.fields.keys()) if invoice.fields else False
@@ -132,8 +186,9 @@ async def process_pdfs(
                         "filename": file.filename,
                         "status": "完了" if kwh_extracted else "kWh未検出",
                         "fields": invoice.fields,
-                        "ocr_text": invoice.raw_text,
+                        "ocr_text": best_text,
                         "ocr_confidence": ocr_confidence
+                        ,"text_source": text_source
                     })
                 
             except Exception as e:
@@ -152,7 +207,8 @@ async def process_pdfs(
                 address=address,
                 corp_number=corp_number
             )
-            _last_excel_path = excel_path
+            job_id = uuid.uuid4().hex
+            _excel_jobs[job_id] = excel_path
             logger.info(f"Excel書き込み完了: {excel_path}")
         except Exception as e:
             logger.error(f"Excel書き込みエラー: {str(e)}", exc_info=True)
@@ -161,7 +217,8 @@ async def process_pdfs(
         return JSONResponse({
             "success": True,
             "results": results,
-            "excel_path": excel_path
+            "excel_path": excel_path,
+            "job_id": job_id
         })
         
     except Exception as e:
@@ -171,25 +228,28 @@ async def process_pdfs(
 
 @router.get("/download")
 async def download_excel(
+    job_id: str,
     corp_name: str = "",
     address: str = "",
-    corp_number: str = ""
+    corp_number: str = "",
+    kwh_overrides: str = ""
 ):
     """
     生成されたExcelファイルをダウンロード
     ダウンロード時に最新の住所・法人番号を更新
     """
-    global _last_excel_path
+    excel_path = _excel_jobs.get(job_id)
+    if not excel_path or not Path(excel_path).exists():
+        raise HTTPException(status_code=404, detail="Excelファイルが見つかりません（job_idが無効か期限切れです）")
     
-    if not _last_excel_path or not Path(_last_excel_path).exists():
-        raise HTTPException(status_code=404, detail="Excelファイルが見つかりません")
-    
-    # 住所または法人番号が指定されている場合、Excelファイルを更新
-    if address or corp_number:
+    # 住所/法人番号/kWh上書きが指定されている場合、Excelファイルを更新
+    if address or corp_number or kwh_overrides:
         try:
             from openpyxl import load_workbook
-            wb = load_workbook(_last_excel_path)
-            ws = wb.active
+            cfg = load_app_config()
+            wb = load_workbook(excel_path)
+            sheet_name = cfg.get("excel_cell_map", {}).get("sheet", wb.sheetnames[0])
+            ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
             
             # 住所をB2に更新
             if address:
@@ -198,16 +258,63 @@ async def download_excel(
             # 法人番号をB4に更新
             if corp_number:
                 ws['B4'] = corp_number
+
+            # kWhの上書き（{"1": "12345", "2": "23456" ...} のようなJSON文字列）
+            if kwh_overrides:
+                try:
+                    overrides_raw = json.loads(kwh_overrides)
+                except Exception as e:
+                    logger.warning(f"kWh上書きのパースに失敗: {e}")
+                    overrides_raw = {}
+
+                month_cells = {
+                    1: "B21",
+                    2: "C21",
+                    3: "D21",
+                    4: "E21",
+                    5: "F21",
+                    6: "G21",
+                    7: "H21",
+                    8: "I21",
+                    9: "J21",
+                    10: "K21",
+                    11: "L21",
+                    12: "M21",
+                }
+
+                for k, v in (overrides_raw or {}).items():
+                    try:
+                        key_str = str(k).strip()
+                        key_str = key_str.replace("月値", "").replace("月", "")
+                        month = int(key_str)
+                    except Exception:
+                        continue
+                    if month < 1 or month > 12:
+                        continue
+
+                    value_str = "" if v is None else str(v).strip()
+                    if value_str == "":
+                        continue
+
+                    cell = month_cells.get(month)
+                    if not cell:
+                        continue
+
+                    # 数値として書き込み（無理なら文字列）
+                    try:
+                        ws[cell] = int(value_str.replace(",", ""))
+                    except Exception:
+                        ws[cell] = value_str
             
-            wb.save(_last_excel_path)
-            logger.info(f"Excelファイル更新: 住所={address}, 法人番号={corp_number}")
+            wb.save(excel_path)
+            logger.info(f"Excelファイル更新: 住所={address}, 法人番号={corp_number}, kWh上書き={'あり' if kwh_overrides else 'なし'}")
         except Exception as e:
             logger.warning(f"Excelファイルの更新に失敗: {e}")
     
     return FileResponse(
-        _last_excel_path,
+        excel_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=Path(_last_excel_path).name
+        filename=Path(excel_path).name
     )
 
 
