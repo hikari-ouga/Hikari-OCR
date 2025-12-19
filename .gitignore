@@ -11,6 +11,9 @@ instance
 # 出力ファイル
 output_*.xlsx
 
+# マニュアル
+*_マニュアル.pdf
+
 # Python仮想環境
 venv/
 env/

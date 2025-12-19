@@ -38,6 +38,20 @@ def create_app() -> FastAPI:
         """メインページを返す"""
         return FileResponse("app/ui/templates/index.html")
     
+    # マニュアルファイル
+    @app.get("/見積もりアシスト_マニュアル.pdf", tags=["frontend"])
+    async def get_manual():
+        """マニュアルPDFファイルを返す"""
+        from pathlib import Path
+        from urllib.parse import quote
+        manual_path = Path(__file__).parent / "見積もりアシスト_マニュアル.pdf"
+        filename_encoded = quote("見積もりアシスト_マニュアル.pdf")
+        return FileResponse(
+            str(manual_path),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename_encoded}"}
+        )
+    
     return app
 
 
